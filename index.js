@@ -19,6 +19,7 @@ async function run() {
     await client.connect();
     const database = client.db("tiktok");
     const videoCollection = database.collection("videoDetails");
+    const adminCollection = database.collection("admin");
     const bucket = new GridFSBucket(database, { bucketName: "videos" });
 
     console.log("Connected to MongoDB");
@@ -30,7 +31,9 @@ async function run() {
     // Endpoint to upload video details and video file
     app.post("/videoDetails", upload.single("videoFile"), async (req, res) => {
       try {
-        const { title, description } = req.body;
+        const { title, description, name, email } = req.body;
+        const likes = JSON.parse(req.body.likes);
+        const comments = JSON.parse(req.body.comments);
         const videoFile = req.file;
 
         if (!videoFile) {
@@ -71,10 +74,15 @@ async function run() {
           const videoDetails = {
             title,
             description,
+            name,
+            email,
             fileId: file._id,
             filename: file.filename,
             uploadDate: file.uploadDate,
-            videoUrl: `http://localhost:${port}/videos/${file._id}`, // Store HTTP link
+            videoUrl: `http://localhost:${port}/videos/${file._id}`,
+            likes,
+            comments,
+            // Store HTTP link
           };
           const result = await videoCollection.insertOne(videoDetails);
 
@@ -131,6 +139,43 @@ async function run() {
       } catch (error) {
         console.error("Error streaming video:", error);
         res.status(500).json({ success: false, message: "Server error" });
+      }
+    });
+
+    //API for admin
+
+    app.post("/admin", async (req, res) => {
+      const newUser = req.body;
+      const result = await adminCollection.insertOne(newUser);
+      res.json(result);
+    });
+
+    app.get("/admin", async (req, res) => {
+      const user = await adminCollection.findOne({});
+      res.send(user);
+    });
+
+    //delete video
+    app.delete("/videoDetails/:id", async (req, res) => {
+      const id = req.params.id;
+
+      if (!ObjectId.isValid(id)) {
+        return res.status(400).json({ error: "Invalid ID format" });
+      }
+
+      const query = { _id: new ObjectId(id) };
+
+      try {
+        const result = await videoCollection.deleteOne(query);
+        if (result.deletedCount === 1) {
+          // console.log("Item deleted:", result);
+          res.json({ message: "Item deleted successfully", result });
+        } else {
+          res.status(404).json({ error: "Item not found" });
+        }
+      } catch (error) {
+        // console.error("Error deleting item:", error);
+        res.status(500).json({ error: "Failed to delete item" });
       }
     });
   } finally {
