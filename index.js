@@ -97,6 +97,95 @@ async function run() {
         res.status(500).json({ success: false, message: "Server error" });
       }
     });
+    app.post("/videoDetails/:id/like", async (req, res) => {
+      const { id } = req.params;
+      const { userEmail, userName } = req.body;
+
+      try {
+        const video = await videoCollection.findOne({ _id: new ObjectId(id) });
+        if (!video) {
+          return res.status(404).json({ message: "Video not found" });
+        }
+
+        // Add user to likes array
+        video.likes.push({ userEmail, userName });
+
+        // Update the video with the new likes
+        await videoCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: { likes: video.likes } }
+        );
+
+        res.status(200).json({ message: "Video liked successfully!" });
+      } catch (error) {
+        console.error("Error liking video:", error);
+        res.status(500).json({ message: "Error liking video" });
+      }
+    });
+
+    //dislike
+    app.delete("/videoDetails/:id/dislike", async (req, res) => {
+      const videoId = req.params.id; // ID of the video
+      const { userEmail } = req.body; // Email of the user to remove
+
+      try {
+        // Ensure `videoId` and `userEmail` are valid
+        if (!videoId || !userEmail) {
+          return res
+            .status(400)
+            .json({ message: "Invalid video ID or user email" });
+        }
+
+        // Use MongoDB's updateOne with $pull to remove the userEmail from the likes array
+        const result = await videoCollection.updateOne(
+          { _id: new ObjectId(videoId) }, // Match the video by ID
+          { $pull: { likes: { userEmail } } } // Remove the object from likes array where userEmail matches
+        );
+
+        if (result.matchedCount === 0) {
+          return res.status(404).json({ message: "Video not found" });
+        }
+
+        // Retrieve the updated document (optional but helps verify the result)
+        const updatedVideo = await videoCollection.findOne({
+          _id: new ObjectId(videoId),
+        });
+
+        res
+          .status(200)
+          .json({ message: "Disliked successfully!", updatedVideo });
+      } catch (error) {
+        res.status(500).json({ message: "Error disliking video", error });
+      }
+    });
+
+    //post for comment
+    app.post("/videoDetails/:id/comment", async (req, res) => {
+      const { id } = req.params;
+      const { userEmail, userName, comment, time } = req.body;
+      console.log(req.body);
+
+      try {
+        const video = await videoCollection.findOne({ _id: new ObjectId(id) });
+        if (!video) {
+          return res.status(404).json({ message: "Video not found" });
+        }
+
+        // Add user to likes array
+        video.comments.push({ userEmail, userName, comment, time });
+
+        // Update the video with the new likes
+        await videoCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: { comments: video.comments } }
+        );
+
+        res.status(200).json({ message: "comment successfullty!" });
+      } catch (error) {
+        console.error("Error comment video:", error);
+        res.status(500).json({ message: "Error commentvideo" });
+      }
+    });
 
     // Endpoint to get all video details
     app.get("/videoDetails", async (req, res) => {
