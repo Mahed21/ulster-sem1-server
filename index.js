@@ -3,10 +3,15 @@ require("dotenv").config();
 const { MongoClient, GridFSBucket, ObjectId } = require("mongodb");
 const cors = require("cors");
 const multer = require("multer");
+const compression = require("compression"); // Added for GZIP compression
+
 const app = express();
 const port = process.env.PORT || 5000;
+
+// Middleware
 app.use(cors());
 app.use(express.json());
+app.use(compression()); // Enable GZIP compression for responses
 
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.pszjp.mongodb.net/myFirstDatabase?retryWrites=true&w=majority`;
 const client = new MongoClient(uri, {
@@ -20,7 +25,10 @@ async function run() {
     const database = client.db("tiktok");
     const videoCollection = database.collection("videoDetails");
     const adminCollection = database.collection("admin");
-    const bucket = new GridFSBucket(database, { bucketName: "videos" });
+    const bucket = new GridFSBucket(database, {
+      bucketName: "videos",
+      chunkSizeBytes: 1024 * 1024, // 1 MB chunks for better upload performance
+    });
 
     console.log("Connected to MongoDB");
 
@@ -32,8 +40,8 @@ async function run() {
     app.post("/videoDetails", upload.single("videoFile"), async (req, res) => {
       try {
         const { title, description, name, email } = req.body;
-        const likes = JSON.parse(req.body.likes);
-        const comments = JSON.parse(req.body.comments);
+        const likes = JSON.parse(req.body.likes || "[]");
+        const comments = JSON.parse(req.body.comments || "[]");
         const videoFile = req.file;
 
         if (!videoFile) {
@@ -42,54 +50,33 @@ async function run() {
             .json({ success: false, message: "No file uploaded" });
         }
 
-        // Store the video file in GridFS
+        // Stream video to GridFS
         const uploadStream = bucket.openUploadStream(videoFile.originalname, {
           contentType: videoFile.mimetype,
           metadata: { title, description },
         });
 
-        // Pipe the buffer to GridFS upload stream
-        uploadStream.write(videoFile.buffer, (err) => {
-          if (err) {
-            console.error("Error uploading file:", err);
-            return res
-              .status(500)
-              .json({ success: false, message: "Server error during upload" });
-          }
-        });
-
-        uploadStream.end(async () => {
-          const file = await database
-            .collection("videos.files")
-            .findOne({ filename: videoFile.originalname });
-
-          if (!file) {
-            return res.status(500).json({
-              success: false,
-              message: "File not found in database after upload",
-            });
-          }
-
-          // Save file details to the videoDetails collection with HTTP link
+        uploadStream.end(videoFile.buffer, async () => {
           const videoDetails = {
             title,
             description,
             name,
             email,
-            fileId: file._id,
-            filename: file.filename,
-            uploadDate: file.uploadDate,
-            videoUrl: `http://localhost:${port}/videos/${file._id}`,
+            fileId: uploadStream.id,
+            filename: videoFile.originalname,
+            uploadDate: new Date(),
+            videoUrl: `http://localhost:${port}/videos/${uploadStream.id}`,
             likes,
             comments,
-            // Store HTTP link
           };
-          const result = await videoCollection.insertOne(videoDetails);
+
+          // Save metadata asynchronously
+          await videoCollection.insertOne(videoDetails);
 
           res.json({
             success: true,
             message: "Video uploaded successfully",
-            data: result,
+            videoUrl: videoDetails.videoUrl,
           });
         });
       } catch (error) {
@@ -97,6 +84,8 @@ async function run() {
         res.status(500).json({ success: false, message: "Server error" });
       }
     });
+
+    // Endpoint to like a video
     app.post("/videoDetails/:id/like", async (req, res) => {
       const { id } = req.params;
       const { userEmail, userName } = req.body;
@@ -123,47 +112,37 @@ async function run() {
       }
     });
 
-    //dislike
+    // Endpoint to dislike a video
     app.delete("/videoDetails/:id/dislike", async (req, res) => {
-      const videoId = req.params.id; // ID of the video
-      const { userEmail } = req.body; // Email of the user to remove
+      const videoId = req.params.id;
+      const { userEmail } = req.body;
 
       try {
-        // Ensure `videoId` and `userEmail` are valid
         if (!videoId || !userEmail) {
           return res
             .status(400)
             .json({ message: "Invalid video ID or user email" });
         }
 
-        // Use MongoDB's updateOne with $pull to remove the userEmail from the likes array
         const result = await videoCollection.updateOne(
-          { _id: new ObjectId(videoId) }, // Match the video by ID
-          { $pull: { likes: { userEmail } } } // Remove the object from likes array where userEmail matches
+          { _id: new ObjectId(videoId) },
+          { $pull: { likes: { userEmail } } }
         );
 
         if (result.matchedCount === 0) {
           return res.status(404).json({ message: "Video not found" });
         }
 
-        // Retrieve the updated document (optional but helps verify the result)
-        const updatedVideo = await videoCollection.findOne({
-          _id: new ObjectId(videoId),
-        });
-
-        res
-          .status(200)
-          .json({ message: "Disliked successfully!", updatedVideo });
+        res.status(200).json({ message: "Disliked successfully!" });
       } catch (error) {
         res.status(500).json({ message: "Error disliking video", error });
       }
     });
 
-    //post for comment
+    // Endpoint to add a comment
     app.post("/videoDetails/:id/comment", async (req, res) => {
       const { id } = req.params;
       const { userEmail, userName, comment, time } = req.body;
-      console.log(req.body);
 
       try {
         const video = await videoCollection.findOne({ _id: new ObjectId(id) });
@@ -171,23 +150,21 @@ async function run() {
           return res.status(404).json({ message: "Video not found" });
         }
 
-        // Add user to likes array
         video.comments.push({ userEmail, userName, comment, time });
 
-        // Update the video with the new likes
         await videoCollection.updateOne(
           { _id: new ObjectId(id) },
           { $set: { comments: video.comments } }
         );
 
-        res.status(200).json({ message: "comment successfullty!" });
+        res.status(200).json({ message: "Comment added successfully!" });
       } catch (error) {
-        console.error("Error comment video:", error);
-        res.status(500).json({ message: "Error commentvideo" });
+        console.error("Error adding comment:", error);
+        res.status(500).json({ message: "Error adding comment" });
       }
     });
 
-    // Endpoint to get all video details
+    // Endpoint to fetch all video details
     app.get("/videoDetails", async (req, res) => {
       try {
         const videos = await videoCollection.find({}).toArray();
@@ -197,16 +174,13 @@ async function run() {
         res.status(500).json({ success: false, message: "Server error" });
       }
     });
+
+    // Endpoint to stream video by ID
     app.get("/videoDetails/:id", async (req, res) => {
       try {
         const fileId = new ObjectId(req.params.id);
-        const bucket = new GridFSBucket(client.db("tiktok"), {
-          bucketName: "videos",
-        });
 
-        // Find the file metadata to get its content type
-        const file = await client
-          .db("tiktok")
+        const file = await database
           .collection("videos.files")
           .findOne({ _id: fileId });
 
@@ -216,14 +190,9 @@ async function run() {
             .json({ success: false, message: "Video not found" });
         }
 
-        // Set the Content-Type header to match the file type
         res.set("Content-Type", file.contentType);
 
-        // Stream the video to the response
         const downloadStream = bucket.openDownloadStream(fileId);
-        downloadStream.on("error", (err) => {
-          res.status(404).json({ success: false, message: "Video not found" });
-        });
         downloadStream.pipe(res);
       } catch (error) {
         console.error("Error streaming video:", error);
@@ -231,8 +200,26 @@ async function run() {
       }
     });
 
-    //API for admin
+    // Endpoint to delete a video
+    app.delete("/videoDetails/:id", async (req, res) => {
+      const id = req.params.id;
 
+      try {
+        const result = await videoCollection.deleteOne({
+          _id: new ObjectId(id),
+        });
+
+        if (result.deletedCount === 1) {
+          res.json({ message: "Video deleted successfully" });
+        } else {
+          res.status(404).json({ error: "Video not found" });
+        }
+      } catch (error) {
+        res.status(500).json({ error: "Failed to delete video" });
+      }
+    });
+
+    // Admin API
     app.post("/admin", async (req, res) => {
       const newUser = req.body;
       const result = await adminCollection.insertOne(newUser);
@@ -243,40 +230,18 @@ async function run() {
       const user = await adminCollection.findOne({});
       res.send(user);
     });
-
-    //delete video
-    app.delete("/videoDetails/:id", async (req, res) => {
-      const id = req.params.id;
-
-      if (!ObjectId.isValid(id)) {
-        return res.status(400).json({ error: "Invalid ID format" });
-      }
-
-      const query = { _id: new ObjectId(id) };
-
-      try {
-        const result = await videoCollection.deleteOne(query);
-        if (result.deletedCount === 1) {
-          // console.log("Item deleted:", result);
-          res.json({ message: "Item deleted successfully", result });
-        } else {
-          res.status(404).json({ error: "Item not found" });
-        }
-      } catch (error) {
-        // console.error("Error deleting item:", error);
-        res.status(500).json({ error: "Failed to delete item" });
-      }
-    });
   } finally {
-    // await client.close();
+    // Keep the MongoDB connection open
   }
 }
 run().catch(console.dir);
 
+// Default route
 app.get("/", (req, res) => {
   res.send("Hello World!");
 });
 
+// Start the server
 app.listen(port, () => {
   console.log(`Server listening at http://localhost:${port}`);
 });
