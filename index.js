@@ -13,7 +13,10 @@ app.use(cors());
 app.use(express.json());
 app.use(compression()); // Enable GZIP compression for responses
 
-const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.pszjp.mongodb.net/myFirstDatabase?retryWrites=true&w=majority`;
+// const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.pszjp.mongodb.net/tiktok?retryWrites=true&w=majority`;
+
+const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster1.pszjp.mongodb.net/tiktok?retryWrites=true&w=majority&appName=Cluster1`;
+
 const client = new MongoClient(uri, {
   useNewUrlParser: true,
   useUnifiedTopology: true,
@@ -49,6 +52,8 @@ async function run() {
             .status(400)
             .json({ success: false, message: "No file uploaded" });
         }
+
+        // Log parsed fields to ensure they are correct
 
         // Stream video to GridFS
         const uploadStream = bucket.openUploadStream(videoFile.originalname, {
